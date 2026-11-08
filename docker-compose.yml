@@ -1,0 +1,16 @@
+# Local development database only. The two .NET services are run with `dotnet run`.
+# The init script creates the analytics_admin / analytics_ingest roles and the analytics database;
+# the API's migrations then grant the ingest role its (minimal) rights.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/setup.sql:/docker-entrypoint-initdb.d/01-setup.sql:ro
+
+volumes:
+  pgdata:

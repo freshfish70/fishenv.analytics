@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+**/data/
+**/.vs/
+**/*.user
+.git/
+.github/
+.env
+.env.*
+*.key
+tests/
+db/
+docker-compose.yml
+Dockerfile
+README.md
+CLAUDE.md

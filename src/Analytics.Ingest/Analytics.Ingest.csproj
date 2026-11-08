@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Analytics.Core\Analytics.Core.csproj" />
+    <ProjectReference Include="..\Analytics.Postgres\Analytics.Postgres.csproj" />
+    <EmbeddedResource Include="tracker.js" />
+  </ItemGroup>
+
+</Project>

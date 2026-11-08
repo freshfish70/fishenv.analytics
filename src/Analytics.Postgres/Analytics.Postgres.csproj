@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.*" />
+    <!-- Lifts EF Core to the same patch version that the Design package pulls in, so the services and this
+         project bind the same EF Core assemblies. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.*" />
+    <!-- Only needed by the dotnet-ef tool to generate migrations; not shipped with the services. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.*" PrivateAssets="all" />
+    <ProjectReference Include="..\Analytics.Core\Analytics.Core.csproj" />
+  </ItemGroup>
+
+</Project>
