@@ -38,12 +38,19 @@ public interface ISiteStore : ISiteLoader
     Task<int> DeleteOrphanedEventsAsync(CancellationToken ct);
 }
 
-/// <summary>Stores the per-day random salts used for visitor hashing.</summary>
+/// <summary>
+/// Stores one opaque value per UTC day for visitor hashing. <see cref="VisitorHasher"/> only ever hands it sealed
+/// (encrypted) salts, so the store never sees a usable salt.
+/// </summary>
 public interface ISaltStore
 {
-    Task<byte[]> GetOrCreateAsync(DateOnly day, CancellationToken ct);
+    /// <summary>Stores <paramref name="value"/> unless the day already has one; returns the stored value.</summary>
+    Task<byte[]> GetOrAddAsync(DateOnly day, byte[] value, CancellationToken ct);
 
-    /// <summary>Deletes salts for days strictly before <paramref name="before"/>.</summary>
+    /// <summary>Deletes the day's value if it still equals <paramref name="expected"/>.</summary>
+    Task RemoveAsync(DateOnly day, byte[] expected, CancellationToken ct);
+
+    /// <summary>Deletes values for days strictly before <paramref name="before"/>.</summary>
     Task PruneAsync(DateOnly before, CancellationToken ct);
 }
 

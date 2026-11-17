@@ -83,8 +83,9 @@ public sealed class AnalyticsDbContext(DbContextOptions<AnalyticsDbContext> opti
             e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
         });
 
-        // One random salt per UTC day for visitor hashing. Old rows are deleted by the ingest service,
-        // which is what makes visitor identifiers unlinkable across days.
+        // One salt per UTC day for visitor hashing, sealed with AES-GCM under Ingest:SaltKey (which never reaches
+        // the database), so a dump or backup alone cannot recompute visitor ids. Old rows are deleted by the
+        // ingest service, which is what makes visitor identifiers unlinkable across days.
         b.Entity<DailySaltEntity>(e =>
         {
             e.ToTable("daily_salts");

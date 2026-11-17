@@ -2,6 +2,7 @@
 // Exit code is 0 when every check passes. Easy to port to xunit/NUnit later (each Section is a test class).
 
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Analytics.Core;
@@ -258,7 +259,8 @@ await Section("Event validation", () =>
 
 await Section("Visitor hashing", async () =>
 {
-    var hasher = new VisitorHasher(new InMemorySaltStore());
+    const string key = "0123456789abcdef0123456789abcdef-test";
+    var hasher = new VisitorHasher(new InMemorySaltStore(), new SaltSealer(key));
     var now = new DateTime(2026, 11, 7, 12, 0, 0, DateTimeKind.Utc);
     var ua = "Mozilla/5.0 test";
 
@@ -274,16 +276,66 @@ await Section("Visitor hashing", async () =>
     t.Eq(a, await H("1", "::ffff:203.0.113.5", ua, now), "IPv4-mapped IPv6 hashes like the IPv4 address");
 
     var recording = new RecordingSaltStore();
-    var pruning = new VisitorHasher(recording);
+    var pruning = new VisitorHasher(recording, new SaltSealer(key));
     await pruning.HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None);
     await pruning.HashAsync("1", IPAddress.Loopback, ua, now.AddDays(1), CancellationToken.None);
     t.Eq(DateOnly.FromDateTime(now.AddDays(1)), recording.LastPruneBefore, "on a new day every earlier salt is pruned");
+
+    // Shared store: instances (or a restarted process) with the same key agree; the stored value is not the salt.
+    var shared = new RecordingSaltStore();
+    var first = await new VisitorHasher(shared, new SaltSealer(key)).HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None);
+    t.Eq(first, await new VisitorHasher(shared, new SaltSealer(key)).HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None),
+        "instances sharing the store and key compute the same visitor id");
+    var stored = shared.Stored[DateOnly.FromDateTime(now)];
+    t.Eq(61, stored.Length, "the store holds a sealed salt (version, nonce, ciphertext, tag)");
+    var plainMac = Convert.ToHexStringLower(HMACSHA256.HashData(stored,
+        System.Text.Encoding.UTF8.GetBytes($"1\n{IPAddress.Loopback}\n{ua}")).AsSpan(0, 16));
+    t.Check(first != plainMac, "the stored value is not usable as the salt");
+
+    // Another key cannot open it, replaces it and logs; its visitor ids differ.
+    var other = await new VisitorHasher(shared, new SaltSealer(key + "-rotated")).HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None);
+    t.Check(first != other, "a different key gives different visitor ids");
+    t.Eq(1, shared.Removed, "a salt sealed under another key is replaced");
+
+    // A plaintext salt left by an older version is replaced, not used.
+    var legacy = new RecordingSaltStore();
+    await legacy.GetOrAddAsync(DateOnly.FromDateTime(now), RandomNumberGenerator.GetBytes(32), CancellationToken.None);
+    await new VisitorHasher(legacy, new SaltSealer(key)).HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None);
+    t.Eq(1, legacy.Removed, "a plaintext salt from before encryption is replaced");
+    t.Eq(61, legacy.Stored[DateOnly.FromDateTime(now)].Length, "and a sealed one stored instead");
+
+    var mem = VisitorHasher.InMemory();
+    var m = await mem.HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None);
+    t.Eq(m, await mem.HashAsync("1", IPAddress.Loopback, ua, now.AddHours(1), CancellationToken.None), "in-memory mode is stable within a day");
+    t.Check(m != await VisitorHasher.InMemory().HashAsync("1", IPAddress.Loopback, ua, now, CancellationToken.None),
+        "in-memory mode: a new process has a new salt");
 
     var v6a = await H("1", "2001:db8:aaaa:bbbb:1:2:3:4", ua, now);
     t.Eq(v6a, await H("1", "2001:db8:aaaa:bbbb:ffff:eeee:dddd:cccc", ua, now), "IPv6 addresses in the same /64 are one visitor");
     t.Check(v6a != await H("1", "2001:db8:aaaa:cccc::1", ua, now), "different /64, different visitor");
     // Last: moving to the next day prunes today's salt.
     t.Check(a != await H("1", "203.0.113.5", ua, now.AddDays(1)), "visitor changes the next day (salt rotation)");
+});
+
+await Section("Salt sealing", () =>
+{
+    var sealer = new SaltSealer("0123456789abcdef0123456789abcdef-test");
+    var day = new DateOnly(2026, 11, 7);
+    var salt = RandomNumberGenerator.GetBytes(32);
+    var sealedSalt = sealer.Seal(day, salt);
+
+    t.Check(sealer.TryOpen(day, sealedSalt, out var opened) && opened.AsSpan().SequenceEqual(salt), "seal and open round-trip");
+    t.Check(!sealedSalt.AsSpan().SequenceEqual(sealer.Seal(day, salt)), "each seal uses a fresh nonce");
+    t.Check(!sealer.TryOpen(day.AddDays(1), sealedSalt, out _), "a sealed salt is bound to its day");
+    t.Check(!new SaltSealer("0123456789abcdef0123456789abcdef-other").TryOpen(day, sealedSalt, out _), "another key cannot open it");
+    var tampered = (byte[])sealedSalt.Clone();
+    tampered[20] ^= 1;
+    t.Check(!sealer.TryOpen(day, tampered, out _), "a modified value is rejected");
+    t.Check(!sealer.TryOpen(day, salt, out _), "a plaintext salt is rejected");
+    var shortKeyRejected = false;
+    try { _ = new SaltSealer("too short"); } catch (ArgumentException) { shortKeyRejected = true; }
+    t.Check(shortKeyRejected, "keys shorter than 32 characters are rejected");
+    return Task.CompletedTask;
 });
 
 await Section("Date ranges", () =>
@@ -561,15 +613,27 @@ sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) 
 
 sealed class RecordingSaltStore : ISaltStore
 {
-    private readonly InMemorySaltStore _inner = new();
+    public Dictionary<DateOnly, byte[]> Stored { get; } = new();
     public DateOnly? LastPruneBefore { get; private set; }
+    public int Removed { get; private set; }
 
-    public Task<byte[]> GetOrCreateAsync(DateOnly day, CancellationToken ct) => _inner.GetOrCreateAsync(day, ct);
+    public Task<byte[]> GetOrAddAsync(DateOnly day, byte[] value, CancellationToken ct)
+    {
+        Stored.TryAdd(day, value);
+        return Task.FromResult(Stored[day]);
+    }
+
+    public Task RemoveAsync(DateOnly day, byte[] expected, CancellationToken ct)
+    {
+        if (Stored.TryGetValue(day, out var v) && v.AsSpan().SequenceEqual(expected)) { Stored.Remove(day); Removed++; }
+        return Task.CompletedTask;
+    }
 
     public Task PruneAsync(DateOnly before, CancellationToken ct)
     {
         LastPruneBefore = before;
-        return _inner.PruneAsync(before, ct);
+        foreach (var d in Stored.Keys.Where(d => d < before).ToList()) Stored.Remove(d);
+        return Task.CompletedTask;
     }
 }
 

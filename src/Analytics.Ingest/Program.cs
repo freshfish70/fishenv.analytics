@@ -23,7 +23,13 @@ builder.Services.AddPostgresStorage(
     ?? throw new InvalidOperationException("ConnectionStrings:Ingest is not configured"));
 
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<VisitorHasher>();
+// With a salt key, the daily salt is stored sealed in the database (shared by every instance, survives restarts).
+// Without one, it lives only in this process's memory. Either way a database dump alone cannot reverse visitor ids.
+// Constructed here so that a too-short key fails at startup, not on the first event.
+var saltSealer = string.IsNullOrEmpty(options.SaltKey) ? null : new SaltSealer(options.SaltKey);
+builder.Services.AddSingleton(sp => saltSealer is null
+    ? VisitorHasher.InMemory()
+    : new VisitorHasher(sp.GetRequiredService<ISaltStore>(), saltSealer, sp.GetRequiredService<ILogger<VisitorHasher>>()));
 builder.Services.AddSingleton(new UserIdHasher(options.IdentitySecret));
 
 builder.Services.AddSingleton<SiteDirectory>();
@@ -79,6 +85,12 @@ builder.Services.AddRateLimiter(o =>
 var app = builder.Build();
 
 app.Logger.LogInformation("GeoIP data directory: {Dir}", geoDir);
+if (saltSealer is null)
+{
+    app.Logger.LogWarning(
+        "Ingest:SaltKey is not set: the visitor salt is kept in memory only. A restart splits today's visitors, " +
+        "and several ingest instances would count the same visitor separately");
+}
 
 app.UseForwardedHeaders();
 

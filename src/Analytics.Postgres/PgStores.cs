@@ -196,21 +196,26 @@ internal sealed class PgSiteStore(IDbContextFactory<AnalyticsDbContext> factory)
 
 internal sealed class PgSaltStore(IDbContextFactory<AnalyticsDbContext> factory) : ISaltStore
 {
-    public async Task<byte[]> GetOrCreateAsync(DateOnly day, CancellationToken ct)
+    public async Task<byte[]> GetOrAddAsync(DateOnly day, byte[] value, CancellationToken ct)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
 
         // EF Core has no upsert. ON CONFLICT keeps this race-free when several ingest instances start a new day
-        // at once; the interpolated values become parameters.
-        var salt = RandomNumberGenerator.GetBytes(32);
+        // at once: one value wins and every instance reads it back. The interpolated values become parameters.
         await db.Database.ExecuteSqlAsync(
-            $"INSERT INTO daily_salts (day, salt) VALUES ({day}, {salt}) ON CONFLICT (day) DO NOTHING", ct);
+            $"INSERT INTO daily_salts (day, salt) VALUES ({day}, {value}) ON CONFLICT (day) DO NOTHING", ct);
 
         return await db.DailySalts.AsNoTracking()
                    .Where(s => s.Day == day)
                    .Select(s => s.Salt)
                    .SingleOrDefaultAsync(ct)
                ?? throw new InvalidOperationException($"No salt stored for {day}");
+    }
+
+    public async Task RemoveAsync(DateOnly day, byte[] expected, CancellationToken ct)
+    {
+        await using var db = await factory.CreateDbContextAsync(ct);
+        await db.DailySalts.Where(s => s.Day == day && s.Salt == expected).ExecuteDeleteAsync(ct);
     }
 
     public async Task PruneAsync(DateOnly before, CancellationToken ct)

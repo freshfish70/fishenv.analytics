@@ -36,4 +36,12 @@ public sealed class IngestOptions
     /// database and stable: changing it gives every user a new visitor id. Empty disables identification.
     /// </summary>
     public string? IdentitySecret { get; set; }
+
+    /// <summary>
+    /// Key that encrypts the daily visitor salt before it is stored (at least 32 characters). It must be the same on
+    /// every ingest instance, never be stored in the database or its backups, and differ from IdentitySecret.
+    /// Changing it during a day only splits that day's visitors. Empty keeps the salt in memory only (single
+    /// instance; a restart splits the day's visitors).
+    /// </summary>
+    public string? SaltKey { get; set; }
 }

@@ -54,12 +54,15 @@ docker run -d -p 127.0.0.1:8081:8081 \
 docker run -d -p 8080:8080 -v analytics-geo:/app/data \
   -e ConnectionStrings__Ingest="Host=db;Database=analytics;Username=analytics_ingest;Password=..." \
   -e Ingest__TrustedProxies__0=172.18.0.0/16 \
+  -e Ingest__SaltKey="..." \
   ghcr.io/freshfish70/fishenv.analytics-ingest:latest
 docker run --rm -e ConnectionStrings__Api="..." ghcr.io/freshfish70/fishenv.analytics-api:latest create-key "my dashboard" admin
 ```
 
 The containers run as a non-root user and listen on all interfaces (ingest 8080, API 8081); keep the API port
-private. Mount `/app/data` on ingest so the GeoIP files survive restarts. Inside Docker, a reverse proxy is
+private. Mount `/app/data` on ingest so the GeoIP files survive restarts. Generate `Ingest:SaltKey` once with
+`openssl rand -base64 48`, use the same value on every ingest instance, and keep it out of the database and its
+backups (see Privacy model). Inside Docker, a reverse proxy is
 not loopback, so its network must be in `Ingest:TrustedProxies` (see Operations notes).
 
 Register a site, then add the tracker to its pages:
@@ -160,8 +163,16 @@ Examples:
 - The IP address is used in memory for the country lookup and visitor hash, then discarded. The user agent is reduced
   to browser / OS / device class. Paths are stored without query strings (except `utm_*`), referrers as host only.
 - Visitor id = `HMAC-SHA256(daily salt, site | ip | user agent)`, truncated. The salt is random, changes at 00:00 UTC and
-  the previous one is deleted with the first event of the new day, so ids cannot be linked across days or reversed.
-  IPv6 uses the /64 prefix.
+  the previous one is deleted with the first event of the new day, after which ids cannot be linked across days or
+  reversed by anyone. IPv6 uses the /64 prefix.
+- The salt is stored only encrypted (AES-256-GCM) with `Ingest:SaltKey`, which lives in the ingest configuration and
+  never in the database. A database dump or backup alone therefore cannot be brute-forced back to visitors' IP
+  addresses; someone who also has the key can, for the current day. Every ingest instance must use the same key, and
+  restarts keep the day's visitor ids. Changing the key, or upgrading from a version with plaintext salts, starts a new
+  salt and counts that day's earlier visitors again.
+- Without `Ingest:SaltKey` the salt is kept only in the ingest process's memory: equally safe against dumps, but a
+  restart starts a new salt (that day's returning visitors count twice) and several instances would each have their
+  own. Fine for development and a single small instance; ingest logs a warning at startup.
 - Exception: identified users on sites with `identify_users` (see above) get a stable id instead.
 - Consequence: anonymous "visitors" are unique per UTC day. Over a multi-day range (and in week/month timeseries buckets) the
   number is the sum of daily unique visitors: someone who comes back on three days counts three times. With a
