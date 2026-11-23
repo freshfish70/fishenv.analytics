@@ -19,13 +19,13 @@ COPY src/Analytics.Core/Analytics.Core.csproj         src/Analytics.Core/
 COPY src/Analytics.Postgres/Analytics.Postgres.csproj src/Analytics.Postgres/
 COPY src/Analytics.Ingest/Analytics.Ingest.csproj     src/Analytics.Ingest/
 COPY src/Analytics.Api/Analytics.Api.csproj           src/Analytics.Api/
-RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
+RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked \
     arch=$([ "$TARGETARCH" = "amd64" ] && echo x64 || echo "$TARGETARCH") \
  && dotnet restore src/Analytics.Ingest/Analytics.Ingest.csproj -a "$arch" \
  && dotnet restore src/Analytics.Api/Analytics.Api.csproj -a "$arch"
 
 COPY src/ src/
-RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
+RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages,sharing=locked \
     arch=$([ "$TARGETARCH" = "amd64" ] && echo x64 || echo "$TARGETARCH") \
  && dotnet publish src/Analytics.Ingest/Analytics.Ingest.csproj -c Release -a "$arch" --no-restore \
         -p:UseAppHost=false -o /out/ingest \
